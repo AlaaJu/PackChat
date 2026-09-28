@@ -1,1 +1,202 @@
+const express = require('express');
+const cors = require('cors');
+const OpenAI = require('openai');
 
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+const PORT = process.env.PORT || 3000;
+
+const hasOpenAIKey =
+  Boolean(process.env.OPENAI_API_KEY);
+
+const openai = hasOpenAIKey
+  ? new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    })
+  : null;
+
+
+// جلسات مؤقتة أثناء التشغيل
+const sessions = new Map();
+
+
+const GUIDE_INSTRUCTIONS = `
+أنت مرشد سياحي ذكي.
+
+تحدث مع المستخدم بشكل طبيعي، كما لو أنه دخل مكتب مرشد سياحي وبدأ يشرح ما في باله.
+
+لا تستخدم قائمة أسئلة ثابتة.
+
+لا تستخدم تصنيفات جاهزة للمستخدم.
+
+لا تجبره على اختيار نوع رحلة أو وجهة أو ميزانية.
+
+افهم كلامه من السياق والمحادثة السابقة.
+
+إذا احتجت معلومة إضافية، اسأل فقط عما تحتاجه فعلاً للخطوة التالية.
+
+إذا تستطيع مساعدته مباشرة، ساعده دون طرح أسئلة غير ضرورية.
+
+لا تحول المحادثة إلى استبيان.
+
+تذكر ما قاله سابقاً في نفس المحادثة.
+
+إذا غير رأيه أو صحح معلومة، اعتمد الجديدة.
+
+لا تدعي امتلاك أسعار حية أو بيانات حجز أو معلومات آنية ما لم تكن متصلة لاحقاً بمصدر بيانات فعلي.
+
+تحدث باللغة التي يستخدمها المستخدم.
+
+إذا كان يتحدث بالعربية، استخدم عربية طبيعية ومريحة.
+`;
+
+
+// اختبار أن السيرفر شغال
+app.get('/', (req, res) => {
+  res.json({
+    service: 'PackChat',
+    status: 'running',
+    aiConfigured: hasOpenAIKey,
+  });
+});
+
+
+// المحادثة
+app.post('/chat', async (req, res) => {
+  try {
+    const {
+      sessionId,
+      message,
+    } = req.body;
+
+
+    if (
+      !sessionId ||
+      typeof sessionId !== 'string'
+    ) {
+      return res.status(400).json({
+        error: 'sessionId is required',
+      });
+    }
+
+
+    if (
+      !message ||
+      typeof message !== 'string' ||
+      !message.trim()
+    ) {
+      return res.status(400).json({
+        error: 'message is required',
+      });
+    }
+
+
+    // السيرفر يشتغل حتى بدون OpenAI
+    if (!openai) {
+      return res.status(503).json({
+        error: 'AI_NOT_CONFIGURED',
+
+        message:
+          'PackChat backend is working, but no AI provider is configured yet.',
+      });
+    }
+
+
+    const session =
+      sessions.get(sessionId);
+
+
+    const request = {
+      model:
+        process.env.OPENAI_MODEL ||
+        'gpt-6-luna',
+
+      instructions:
+        GUIDE_INSTRUCTIONS,
+
+      input:
+        message.trim(),
+
+      store: true,
+    };
+
+
+    if (
+      session?.previousResponseId
+    ) {
+      request.previous_response_id =
+        session.previousResponseId;
+    }
+
+
+    const response =
+      await openai.responses.create(
+        request
+      );
+
+
+    const reply =
+      response.output_text?.trim();
+
+
+    if (!reply) {
+      throw new Error(
+        'Model returned an empty response'
+      );
+    }
+
+
+    sessions.set(
+      sessionId,
+      {
+        previousResponseId:
+          response.id,
+
+        updatedAt:
+          Date.now(),
+      }
+    );
+
+
+    res.json({
+      reply,
+    });
+
+  } catch (error) {
+
+    console.error(
+      'PACKCHAT ERROR:',
+      error
+    );
+
+    res.status(500).json({
+      error:
+        error?.message ||
+        'Unknown error',
+    });
+  }
+});
+
+
+app.listen(
+  PORT,
+  '0.0.0.0',
+  () => {
+    console.log('');
+    console.log('PackChat is running');
+    console.log(
+      `Port: ${PORT}`
+    );
+
+    console.log(
+      hasOpenAIKey
+        ? 'AI: configured'
+        : 'AI: not configured yet'
+    );
+
+    console.log('');
+  }
+);
